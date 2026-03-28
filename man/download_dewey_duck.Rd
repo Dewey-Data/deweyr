@@ -10,6 +10,7 @@ download_dewey_duck(
   output_dir = get_download_dir(),
   partition,
   overwrite = FALSE,
+  file_name = NULL,
   where = NULL,
   select = NULL
 )
@@ -63,14 +64,14 @@ download_dewey_duck(api_key, data_id, partition = NULL)
 
 # Filter and select columns
 download_dewey_duck(api_key, data_id, base_dir,
-    partition = "MONTH_DATE_PARSED",
-    where = "CARRIER_GROUP = 'Major'",
-    select = c(1:3, "TOTAL")
+  partition = "MONTH_DATE_PARSED",
+  where = "CARRIER_GROUP = 'Major'",
+  select = c(1:3, "TOTAL")
 )
 
 # Download and read in one step
 df <- download_dewey_duck(api_key, data_id, partition = "MONTH_DATE_PARSED") |>
-    read_dewey()
+  read_dewey()
 }
 
 }

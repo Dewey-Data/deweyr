@@ -155,7 +155,12 @@ preview_dewey_duck <- function(api_key, data_id, limit = 10) {
 #' @export
 download_dewey_duck <- function(api_key, data_id, output_dir = get_download_dir(), partition, overwrite = FALSE, file_name = NULL, where = NULL, select = NULL) {
   result <- get_dewey_urls(api_key, data_id, file_name = file_name)
-  cols <- colnames(preview_dewey_duck(api_key, data_id, limit = 0))
+  cols <- result$cols # ✅ no second call needed
+
+  # fallback in case cols came back empty
+  if (length(cols) == 0) {
+    cols <- colnames(preview_dewey_duck(api_key, data_id, limit = 0))
+  }
 
   if (missing(partition)) {
     if (!is.null(result$partition_key) && result$partition_key %in% cols) {

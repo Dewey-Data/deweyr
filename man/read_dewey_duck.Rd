@@ -40,7 +40,7 @@ df <- read_dewey_duck("C:/dewey-downloads/airline-employment")
 
 # Pipe directly from download
 df <- download_dewey_duck(api_key, data_id, base_dir, partition = "MONTH_DATE_PARSED") |>
-    read_dewey_duck()
+  read_dewey_duck()
 
 # Filter on read
 df <- read_dewey_duck("C:/dewey-downloads/airline-employment", where = "CARRIER_GROUP = 'Major'")

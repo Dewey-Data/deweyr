@@ -4,7 +4,7 @@
 \alias{preview_dewey_duck}
 \title{Preview a Dewey dataset}
 \usage{
-preview_dewey_duck(api_key, data_id, limit = 10, where = NULL)
+preview_dewey_duck(api_key, data_id, limit = 10)
 }
 \arguments{
 \item{api_key}{Your Dewey API key. Store in \code{.Renviron} as
