@@ -57,7 +57,7 @@ api_key <- Sys.getenv("DEWEY_API_KEY")
 
 ### 1. Preview the data
 
-Before downloading, use `preview_dewey()` to explore the dataset — see column names, types, and a sample of the data:
+Before downloading, use `preview_dewey_duck()` to explore the dataset — see column names, types, and a sample of the data:
 
 ```r
 library(deweyr)
@@ -65,14 +65,14 @@ library(deweyr)
 api_key <- Sys.getenv("DEWEY_API_KEY")
 data_id <- "prj_evgjik8m__fldr_zzpetxhxnakvp3qyi"
 
-df_preview <- preview_dewey(api_key, data_id)
+df_preview <- preview_dewey_duck(api_key, data_id)
 df_preview
 ```
 
 To just get column names without fetching any rows:
 
 ```r
-colnames(preview_dewey(api_key, data_id, limit = 0))
+colnames(preview_dewey_duck(api_key, data_id, limit = 0))
 ```
 
 ---
