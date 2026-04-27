@@ -34,7 +34,7 @@ library(deweyr)
 # Download to default location (./dewey-downloads)
 download_dewey(
   api_key = "your-api-key",
-  project_id = "abc123"
+  folder_id = "abc123"
 )
 ```
 
@@ -45,7 +45,7 @@ download_dewey(
 ```r
 download_dewey(
   api_key = "your-api-key",
-  project_id = "abc123",
+  folder_id = "abc123",
   download_path = "C:/Users/YourName/Documents/data"
 )
 ```
@@ -57,7 +57,7 @@ You can use either a folder ID or the full Dewey URL:
 ```r
 download_dewey(
   api_key = "your-api-key",
-  project_id = "https://api.deweydata.io/api/v1/external/data/abc123"
+  folder_id = "https://api.deweydata.io/api/v1/external/data/abc123"
 )
 ```
 
@@ -68,7 +68,7 @@ Adjust the number of workers for faster downloads (default is 8):
 ```r
 download_dewey(
   api_key = "your-api-key",
-  project_id = "abc123",
+  folder_id = "abc123",
   num_workers = 16  # Use 16 parallel workers
 )
 ```
@@ -81,21 +81,21 @@ For datasets partitioned by date, you can filter which partitions to download:
 # Download only data from 2024 onwards
 download_dewey(
   api_key = "your-api-key",
-  project_id = "abc123",
+  folder_id = "abc123",
   partition_key_after = "2024-01-01"
 )
 
 # Download only data up to a certain date
 download_dewey(
   api_key = "your-api-key",
-  project_id = "abc123",
+  folder_id = "abc123",
   partition_key_before = "2023-12-31"
 )
 
 # Download a specific date range
 download_dewey(
   api_key = "your-api-key",
-  project_id = "abc123",
+  folder_id = "abc123",
   partition_key_after = "2024-01-01",
   partition_key_before = "2024-03-31"
 )
