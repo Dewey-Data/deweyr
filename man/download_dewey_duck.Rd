@@ -12,7 +12,9 @@ download_dewey_duck(
   overwrite = FALSE,
   file_name = NULL,
   where = NULL,
-  select = NULL
+  select = NULL,
+  partition_key_after = NULL,
+  partition_key_before = NULL
 )
 }
 \arguments{
@@ -37,6 +39,13 @@ Example: \code{where = "CARRIER_GROUP = 'Major'"}}
 \item{select}{Optional vector of column indices, ranges, or names to download.
 Accepts mixed input e.g. \code{c(1:3, 7, "CARRIER_NAME")}. The partition
 column will always be added automatically if missing.}
+
+\item{partition_key_after}{Optional character string (typically YYYY-MM-DD).
+Pre-filters the file manifest to partitions on/after this key — drastically
+reduces manifest size on large datasets like SafeGraph Visits.}
+
+\item{partition_key_before}{Optional character string (typically YYYY-MM-DD).
+Pre-filters the file manifest to partitions on/before this key.}
 }
 \value{
 The path to the downloaded dataset folder, invisibly. Pipe into
@@ -67,6 +76,12 @@ download_dewey_duck(api_key, data_id, base_dir,
   partition = "MONTH_DATE_PARSED",
   where = "CARRIER_GROUP = 'Major'",
   select = c(1:3, "TOTAL")
+)
+
+# Date-bounded download (huge speedup on Visits-scale datasets)
+download_dewey_duck(api_key, data_id,
+  partition_key_after = "2024-01-01",
+  partition_key_before = "2024-02-01"
 )
 
 # Download and read in one step
