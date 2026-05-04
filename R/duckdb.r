@@ -44,6 +44,21 @@ build_get_dewey_urls_args <- function(script, api_key, data_id, file_name,
   )
 }
 
+# Reject an empty / NA / missing api_key BEFORE shelling out to uv.
+# system2() drops empty-string args, which silently shifts every positional
+# argv on the Python side and produces a confusing 401-on-the-wrong-URL.
+validate_required_string <- function(value, arg_name) {
+  if (is.null(value) || !is.character(value) || length(value) != 1 ||
+      is.na(value) || !nzchar(value)) {
+    stop(arg_name, " must be a non-empty character string. ",
+         "Got: ", deparse(value),
+         if (identical(arg_name, "api_key"))
+           " (hint: Sys.getenv(\"DEWEY_API_KEY\") may be empty if .Renviron didn't load — try readRenviron(\"~/.Renviron\"))"
+         else "")
+  }
+  invisible(NULL)
+}
+
 #' Validate a partition_key argument
 #'
 #' Cheap sanity-check on user-supplied partition_key values before they go
@@ -97,6 +112,8 @@ validate_partition_key <- function(value, arg_name) {
 #' @noRd
 get_dewey_urls <- function(api_key, data_id, file_name = NULL, preview = FALSE,
                            partition_key_after = NULL, partition_key_before = NULL) {
+  validate_required_string(api_key, "api_key")
+  validate_required_string(data_id, "data_id")
   if (!check_uv()) {
     install_uv()
     message("Restarting the terminal will increase speed of future runs")

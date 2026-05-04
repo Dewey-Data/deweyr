@@ -9,6 +9,28 @@
 
 # ---- validator gates (no mocking needed) -------------------------------------
 
+# ---- regression: empty api_key / data_id error before shell out --------------
+# Empty strings are silently dropped by system2(), shifting Python's positional
+# argv. Without this gate the user gets a confusing 401 on a malformed URL
+# (data/__DEWEYR_NULL__/files) instead of a clear "set your API key" message.
+
+test_that("preview_dewey_duck rejects empty api_key with a useful hint", {
+  err <- tryCatch(
+    preview_dewey_duck("", "prj_x__fldr_y", limit = 0),
+    error = function(e) conditionMessage(e)
+  )
+  expect_match(err, "api_key", fixed = TRUE)
+  expect_match(err, "non-empty", fixed = TRUE)
+  expect_match(err, "DEWEY_API_KEY", fixed = TRUE)  # the hint
+})
+
+test_that("download_dewey_duck rejects NA data_id", {
+  expect_error(
+    download_dewey_duck("k", NA_character_),
+    "data_id"
+  )
+})
+
 test_that("download_dewey_duck rejects empty partition_key_after", {
   expect_error(
     download_dewey_duck("k", "prj_x__fldr_y", partition_key_after = ""),
