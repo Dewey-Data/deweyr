@@ -250,6 +250,13 @@ preview_dewey_duck <- function(api_key, data_id, limit = 10) {
 #'   reduces manifest size on large datasets like SafeGraph Visits.
 #' @param partition_key_before Optional character string (typically YYYY-MM-DD).
 #'   Pre-filters the file manifest to partitions on/before this key.
+#' @param batch_size Number of source files to read per DuckDB query. The dataset's
+#'   file manifest is processed in batches of this size so we never open thousands of
+#'   remote files at once — a single read over the whole manifest fires thousands of
+#'   simultaneous requests at the Dewey download API and triggers HTTP 500 errors on
+#'   large datasets that can't be pre-filtered with \code{partition_key_*} (e.g.
+#'   Veraset Visits, which has no date partition). Defaults to 25. Lower it if you
+#'   still hit request errors; raise it for throughput on small, reliable datasets.
 #'
 #' @return The path to the downloaded dataset folder, invisibly. Pipe into
 #'   \code{read_dewey()} to read immediately after downloading.
@@ -295,7 +302,8 @@ download_dewey_duck <- function(api_key, data_id, output_dir = get_download_dir(
                                 partition, overwrite = FALSE, file_name = NULL,
                                 where = NULL, select = NULL,
                                 partition_key_after = NULL,
-                                partition_key_before = NULL) {
+                                partition_key_before = NULL,
+                                batch_size = 25) {
   validate_partition_key(partition_key_after, "partition_key_after")
   validate_partition_key(partition_key_before, "partition_key_before")
 
@@ -387,34 +395,56 @@ download_dewey_duck <- function(api_key, data_id, output_dir = get_download_dir(
   on.exit(DBI::dbDisconnect(con))
   DBI::dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
 
-  read_fn <- ifelse(file_extension == ".snappy.parquet", "read_parquet", "read_csv")
-  urls_sql <- paste0("['", paste(urls, collapse = "','"), "']")
+  # Be gentle on the Dewey download API: reuse connections and retry transient
+  # HTTP errors with backoff (the endpoint can return 500s under a burst of requests).
+  DBI::dbExecute(con, "SET http_keep_alive = true;")
+  DBI::dbExecute(con, "SET http_retries = 5;")
+  DBI::dbExecute(con, "SET http_retry_wait_ms = 1000;")
+  DBI::dbExecute(con, "SET http_retry_backoff = 2;")
 
-  if (!is.null(partition_col)) {
-    DBI::dbExecute(con, glue::glue(
-      "COPY (
-        SELECT {select_sql} FROM {read_fn}({urls_sql})
-        {where_clause}
-      )
-      TO '{out_read}'
-      (FORMAT PARQUET,
-       PARTITION_BY {partition_col},
-       ROW_GROUP_SIZE 256000,
-       COMPRESSION ZSTD,
-       OVERWRITE_OR_IGNORE true)"
-    ))
-  } else {
-    DBI::dbExecute(con, glue::glue(
-      "COPY (
-        SELECT {select_sql} FROM {read_fn}({urls_sql})
-        {where_clause}
-      )
-      TO '{out_read}/data.parquet'
-      (FORMAT PARQUET,
-       ROW_GROUP_SIZE 256000,
-       COMPRESSION ZSTD,
-       OVERWRITE_OR_IGNORE true)"
-    ))
+  read_fn <- ifelse(file_extension == ".snappy.parquet", "read_parquet", "read_csv")
+
+  # Process the manifest in batches instead of handing DuckDB every URL at once.
+  # One read_parquet() over thousands of files opens them near-simultaneously and
+  # overwhelms the download API (HTTP 500), which is what breaks large datasets that
+  # can't be pre-filtered by partition_key (e.g. Veraset Visits). Batching bounds how
+  # many remote files are open at a time; each batch writes with a unique filename so
+  # batches never overwrite each other.
+  batches <- split(urls, ceiling(seq_along(urls) / batch_size))
+  n_batches <- length(batches)
+
+  for (i in seq_along(batches)) {
+    urls_sql <- paste0("['", paste(batches[[i]], collapse = "','"), "']")
+
+    if (!is.null(partition_col)) {
+      DBI::dbExecute(con, glue::glue(
+        "COPY (
+          SELECT {select_sql} FROM {read_fn}({urls_sql})
+          {where_clause}
+        )
+        TO '{out_read}'
+        (FORMAT PARQUET,
+         PARTITION_BY {partition_col},
+         FILENAME_PATTERN 'batch{i}_{{uuid}}',
+         ROW_GROUP_SIZE 256000,
+         COMPRESSION ZSTD,
+         OVERWRITE_OR_IGNORE true)"
+      ))
+    } else {
+      DBI::dbExecute(con, glue::glue(
+        "COPY (
+          SELECT {select_sql} FROM {read_fn}({urls_sql})
+          {where_clause}
+        )
+        TO '{out_read}/data_batch{i}.parquet'
+        (FORMAT PARQUET,
+         ROW_GROUP_SIZE 256000,
+         COMPRESSION ZSTD,
+         OVERWRITE_OR_IGNORE true)"
+      ))
+    }
+
+    if (n_batches > 1) message("Batch ", i, "/", n_batches, " complete")
   }
 
   message("Downloaded to: ", out)

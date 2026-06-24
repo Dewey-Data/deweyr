@@ -151,3 +151,122 @@ test_that("partition_key validator fires before any subprocess call", {
   expect_match(err, "partition_key_after", fixed = TRUE)
   expect_false(grepl("__captured__", err, fixed = TRUE))
 })
+
+# ---- batched download: no data lost across batch boundaries ------------------
+# download_dewey_duck() processes the file manifest in batches of `batch_size`
+# rather than handing DuckDB every URL at once (which floods the download API
+# with simultaneous requests and 500s on large, unpartitioned datasets like
+# Veraset Visits). These run the REAL download + read against LOCAL parquet,
+# mocking only the network call. Each source file tags its rows with a unique
+# city, so an overwriting bug would drop the distinct-city count.
+
+# Create `n` local parquet files (cols: city, naics_code, state, caid).
+make_source_files <- function(dir, n = 7) {
+  dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+  con <- DBI::dbConnect(duckdb::duckdb())
+  on.exit(DBI::dbDisconnect(con), add = TRUE)
+  for (i in seq_len(n)) {
+    f <- file.path(dir, sprintf("file_%02d.parquet", i))
+    DBI::dbExecute(con, glue::glue(
+      "COPY (SELECT * FROM (VALUES
+         ('GA_522_{i}', '522110', 'GA', 'caid'),
+         ('NY_522_{i}', '522110', 'NY', 'caid'),
+         ('GA_541_{i}', '541110', 'GA', 'caid'),
+         ('NY_111_{i}', '111111', 'NY', 'caid')
+       ) t(city, naics_code, state, caid))
+       TO '{f}' (FORMAT PARQUET)"
+    ))
+  }
+  sort(list.files(dir, pattern = "\\.parquet$", full.names = TRUE))
+}
+
+# get_dewey_urls() stand-in pointing the function at local files. Absorbs the
+# partition_key_* args via ... so it matches the real call signature.
+local_files_result <- function(urls) {
+  function(api_key, data_id, file_name = NULL, preview = FALSE, ...) {
+    list(
+      urls            = if (isTRUE(preview)) urls[[1]] else urls,
+      parent_folder   = "visits-duckdb",
+      file_extension  = ".snappy.parquet",
+      partition_key   = "state",
+      file_size_bytes = 0,
+      cols            = c("city", "naics_code", "state", "caid")
+    )
+  }
+}
+
+test_that("batched, partitioned download keeps every batch's rows (no overwrite)", {
+  skip_on_cran()  # loads the httpfs DuckDB extension; not for CRAN's offline runs
+
+  src <- tempfile("dwsrc"); out <- tempfile("dwout")
+  on.exit(unlink(c(src, out), recursive = TRUE), add = TRUE)
+  urls <- make_source_files(src, n = 7)
+
+  local_mocked_bindings(get_dewey_urls = local_files_result(urls), .package = "deweyr")
+
+  path <- download_dewey_duck(
+    api_key = "k", data_id = "prj_x__fldr_y", output_dir = out,
+    partition = "state", where = "naics_code = '522110'",
+    select = c("city", "naics_code", "state"),
+    batch_size = 3                                   # 7 files -> batches of 3, 3, 1
+  )
+
+  expect_true(dir.exists(path))
+
+  ga_files <- list.files(file.path(path, "state=GA"), pattern = "\\.parquet$")
+  expect_equal(length(ga_files), 3)                  # one uniquely-named file per batch
+  expect_equal(length(unique(ga_files)), 3)          # {uuid} names, no clobber
+  expect_true(all(grepl("^batch", ga_files)))
+
+  df <- read_dewey_duck(path)
+  expect_equal(nrow(df), 14)                                  # 2 matching rows x 7 files
+  expect_equal(length(unique(df$city)), 14)                   # every file's rows survived
+  expect_equal(sort(unique(df$naics_code)), "522110")         # WHERE applied
+  expect_setequal(names(df), c("city", "naics_code", "state")) # SELECT dropped caid
+  expect_equal(as.integer(table(df$state)[c("GA", "NY")]), c(7L, 7L))
+})
+
+test_that("a single batch (batch_size >= file count) still works", {
+  skip_on_cran()
+
+  src <- tempfile("dwsrc"); out <- tempfile("dwout")
+  on.exit(unlink(c(src, out), recursive = TRUE), add = TRUE)
+  urls <- make_source_files(src, n = 4)
+
+  local_mocked_bindings(get_dewey_urls = local_files_result(urls), .package = "deweyr")
+
+  path <- download_dewey_duck(
+    api_key = "k", data_id = "prj_x__fldr_y", output_dir = out,
+    partition = "state", where = "naics_code = '522110'",
+    select = c("city", "naics_code", "state"), batch_size = 100
+  )
+
+  df <- read_dewey_duck(path)
+  expect_equal(nrow(df), 8)
+  expect_equal(length(unique(df$city)), 8)
+  expect_equal(length(list.files(file.path(path, "state=GA"), pattern = "\\.parquet$")), 1)
+})
+
+test_that("batched, unpartitioned download writes one file per batch and loses nothing", {
+  skip_on_cran()
+
+  src <- tempfile("dwsrc"); out <- tempfile("dwout")
+  on.exit(unlink(c(src, out), recursive = TRUE), add = TRUE)
+  urls <- make_source_files(src, n = 7)
+
+  local_mocked_bindings(get_dewey_urls = local_files_result(urls), .package = "deweyr")
+
+  path <- download_dewey_duck(
+    api_key = "k", data_id = "prj_x__fldr_y", output_dir = out,
+    partition = NULL, where = "naics_code = '522110'",
+    select = c("city", "naics_code", "state"), batch_size = 3
+  )
+
+  data_files <- list.files(path, pattern = "^data_batch\\d+\\.parquet$")
+  expect_equal(length(data_files), 3)                # one parquet per batch
+
+  df <- read_dewey_duck(path)
+  expect_equal(nrow(df), 14)
+  expect_equal(length(unique(df$city)), 14)
+  expect_setequal(names(df), c("city", "naics_code", "state"))
+})
