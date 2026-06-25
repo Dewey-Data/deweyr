@@ -20,6 +20,9 @@
 #' @param partition_key_after Character string in YYYY-MM-DD format. If specified,
 #'   includes all partitions from and including this date onward. Only relevant for
 #'   date-partitioned datasets. Leave NULL to download all data.
+#' @param verify If \code{TRUE} (default), scan the downloaded parquet files after
+#'   the download and warn about any that are corrupt (empty or missing the "PAR1"
+#'   footer) — see \code{\link{verify_dewey_download}}. Pass \code{FALSE} to skip.
 #'
 #' @details
 #' This function uses \href{https://docs.astral.sh/uv/}{uv} (a fast Python package installer)
@@ -88,8 +91,9 @@ download_dewey <- function(api_key,
                            python_version = "3.13",
                            num_workers = NULL,
                            partition_key_before = NULL,
-                           partition_key_after = NULL) {
-  
+                           partition_key_after = NULL,
+                           verify = TRUE) {
+
   # Ensure download folder exists
   if (is.null(download_path)) {
     download_path <- get_download_dir(create = TRUE)
@@ -110,7 +114,7 @@ download_dewey <- function(api_key,
   folder_id <- parse_url(folder_id)
   
   # Step 2: Run Dewey download
-  run_deweypy_uv(
+  status <- run_deweypy_uv(
     api_key = api_key,
     download_path = download_path,
     folder_id = folder_id,
@@ -119,4 +123,14 @@ download_dewey <- function(api_key,
     partition_key_before = partition_key_before,
     partition_key_after = partition_key_after
   )
+
+  # Step 3: Verify the downloaded parquet files. A multi-worker download can
+  # silently save an HTTP error body as a .parquet when the download API hiccups
+  # under load; this surfaces those files instead of letting arrow/duckdb choke
+  # on them later.
+  if (verify) {
+    verify_dewey_download(download_path)
+  }
+
+  invisible(status)
 }

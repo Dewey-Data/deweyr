@@ -11,7 +11,8 @@ download_dewey_py(
   python_path = NULL,
   num_workers = NULL,
   partition_key_before = NULL,
-  partition_key_after = NULL
+  partition_key_after = NULL,
+  verify = TRUE
 )
 }
 \arguments{
@@ -36,6 +37,10 @@ date-partitioned datasets. Leave NULL to download all data.}
 \item{partition_key_after}{Character string in YYYY-MM-DD format. If specified,
 includes all partitions from and including this date onward. Only relevant for
 date-partitioned datasets. Leave NULL to download all data.}
+
+\item{verify}{If \code{TRUE} (default), scan the downloaded parquet files after
+the download and warn about any that are corrupt (empty or missing the "PAR1"
+footer) — see \code{\link{verify_dewey_download}}. Pass \code{FALSE} to skip.}
 }
 \description{
 Downloads all files from a Dewey folder using the deweypy Python package.

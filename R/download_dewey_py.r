@@ -19,6 +19,9 @@
 #' @param partition_key_after Character string in YYYY-MM-DD format. If specified,
 #'   includes all partitions from and including this date onward. Only relevant for
 #'   date-partitioned datasets. Leave NULL to download all data.
+#' @param verify If \code{TRUE} (default), scan the downloaded parquet files after
+#'   the download and warn about any that are corrupt (empty or missing the "PAR1"
+#'   footer) — see \code{\link{verify_dewey_download}}. Pass \code{FALSE} to skip.
 #'
 #' @details
 #' The function performs the following steps:
@@ -68,8 +71,9 @@ download_dewey_py <- function(api_key,
                            python_path = NULL,
                            num_workers = NULL,
                            partition_key_before = NULL,
-                           partition_key_after = NULL) {
-  
+                           partition_key_after = NULL,
+                           verify = TRUE) {
+
   # If python_path is NULL, auto-detect it
   if (is.null(python_path)) {
     python_path <- find_python()
@@ -94,7 +98,7 @@ download_dewey_py <- function(api_key,
   }
   
   # Execute deweypy download command
-  run_deweypy(
+  status <- run_deweypy(
     python_path = python_path,
     api_key = api_key,
     download_path = download_path,
@@ -103,4 +107,11 @@ download_dewey_py <- function(api_key,
     partition_key_before = partition_key_before,
     partition_key_after = partition_key_after
   )
+
+  # Verify the downloaded parquet files (see download_dewey() for why).
+  if (verify) {
+    verify_dewey_download(download_path)
+  }
+
+  invisible(status)
 }
