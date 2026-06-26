@@ -15,7 +15,9 @@ download_dewey_duck(
   select = NULL,
   partition_key_after = NULL,
   partition_key_before = NULL,
-  batch_size = 25
+  batch_size = 25,
+  resume = TRUE,
+  batch_retries = 5
 )
 }
 \arguments{
@@ -55,6 +57,18 @@ simultaneous requests at the Dewey download API and triggers HTTP 500 errors on
 large datasets that can't be pre-filtered with \code{partition_key_*} (e.g.
 Veraset Visits, which has no date partition). Defaults to 25. Lower it if you
 still hit request errors; raise it for throughput on small, reliable datasets.}
+
+\item{resume}{If \code{TRUE} (default), re-running the same download into an
+existing folder continues where it left off, skipping batches already on disk
+instead of erroring or starting over. Essential for very large jobs: Dewey's
+download links expire after 24h, so a multi-day download must be re-run
+periodically (each run re-mints links) — \code{resume} makes those re-runs pick
+up where the last left off. Pass \code{overwrite = TRUE} to force a clean restart.}
+
+\item{batch_retries}{Number of times to retry a batch that fails with a transient
+error (e.g. a dropped connection, which DuckDB reports as "HTTP 0") before giving
+up, using exponential backoff. Defaults to 5. On final failure the progress so far
+is saved, so you can re-run to resume.}
 }
 \value{
 The path to the downloaded dataset folder, invisibly. Pipe into

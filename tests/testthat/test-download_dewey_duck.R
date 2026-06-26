@@ -270,3 +270,107 @@ test_that("batched, unpartitioned download writes one file per batch and loses n
   expect_equal(length(unique(df$city)), 14)
   expect_setequal(names(df), c("city", "naics_code", "state"))
 })
+
+# ---- resume: a re-run continues instead of redoing/wiping ---------------------
+# A job big enough to outlive its 24h download links must be re-run to finish.
+# download_dewey_duck() records completed batches in .deweyr_progress.json so a
+# re-run skips them. These tests drive that resume path with local files.
+
+dl_args <- function(out, ...) {
+  base <- list(api_key = "k", data_id = "prj_x__fldr_y", output_dir = out,
+               partition = "state", where = "naics_code = '522110'",
+               select = c("city", "naics_code", "state"), batch_size = 2)
+  modifyList(base, list(...))   # later args (e.g. batch_size, overwrite) win
+}
+
+test_that("resume continues an existing download, skipping completed batches", {
+  skip_on_cran()
+  src <- tempfile("dwsrc"); out <- tempfile("dwout")
+  on.exit(unlink(c(src, out), recursive = TRUE), add = TRUE)
+  urls <- make_source_files(src, n = 6)
+  local_mocked_bindings(get_dewey_urls = local_files_result(urls), .package = "deweyr")
+
+  path <- do.call(download_dewey_duck, dl_args(out))      # 6 files / 2 = 3 batches
+  prog <- jsonlite::fromJSON(file.path(path, ".deweyr_progress.json"))
+  expect_equal(sort(as.integer(prog$completed)), 1:3)
+
+  before <- list.files(path, pattern = "\\.parquet$", recursive = TRUE)
+  expect_message(do.call(download_dewey_duck, dl_args(out)), "Resuming.*3/3")
+  after <- list.files(path, pattern = "\\.parquet$", recursive = TRUE)
+  expect_setequal(after, before)                          # nothing re-written
+})
+
+test_that("resume re-runs only the missing batch", {
+  skip_on_cran()
+  src <- tempfile("dwsrc"); out <- tempfile("dwout")
+  on.exit(unlink(c(src, out), recursive = TRUE), add = TRUE)
+  urls <- make_source_files(src, n = 6)
+  local_mocked_bindings(get_dewey_urls = local_files_result(urls), .package = "deweyr")
+
+  path <- do.call(download_dewey_duck, dl_args(out))
+
+  # Simulate batch 3 never finishing: remove its output and drop it from progress.
+  unlink(list.files(path, pattern = "^batch3_", recursive = TRUE, full.names = TRUE))
+  prog <- jsonlite::fromJSON(file.path(path, ".deweyr_progress.json"))
+  prog$completed <- prog$completed[prog$completed != 3]
+  jsonlite::write_json(prog, file.path(path, ".deweyr_progress.json"), auto_unbox = TRUE)
+
+  expect_message(do.call(download_dewey_duck, dl_args(out)), "Batch 3/3 complete")
+
+  df <- read_dewey_duck(path)
+  expect_equal(nrow(df), 12)                              # all 6 files' matches restored
+  expect_equal(length(unique(df$city)), 12)
+})
+
+test_that("resume refuses a folder that holds a different download", {
+  skip_on_cran()
+  src <- tempfile("dwsrc"); out <- tempfile("dwout")
+  on.exit(unlink(c(src, out), recursive = TRUE), add = TRUE)
+  urls <- make_source_files(src, n = 6)
+  local_mocked_bindings(get_dewey_urls = local_files_result(urls), .package = "deweyr")
+
+  do.call(download_dewey_duck, dl_args(out))               # batch_size 2 -> 3 batches
+  expect_error(
+    do.call(download_dewey_duck, dl_args(out, batch_size = 3)),  # different fingerprint
+    "different download"
+  )
+})
+
+test_that("overwrite = TRUE wipes and restarts the download", {
+  skip_on_cran()
+  src <- tempfile("dwsrc"); out <- tempfile("dwout")
+  on.exit(unlink(c(src, out), recursive = TRUE), add = TRUE)
+  urls <- make_source_files(src, n = 6)
+  local_mocked_bindings(get_dewey_urls = local_files_result(urls), .package = "deweyr")
+
+  path <- do.call(download_dewey_duck, dl_args(out))
+  writeLines("junk", file.path(path, "stray.txt"))
+  do.call(download_dewey_duck, dl_args(out, overwrite = TRUE))
+  expect_false(file.exists(file.path(path, "stray.txt")))  # wiped on restart
+  expect_equal(nrow(read_dewey_duck(path)), 12)
+})
+
+test_that("the manifest is ordered by stable file name so batches are deterministic", {
+  skip_on_cran()
+  src <- tempfile("dwsrc"); out <- tempfile("dwout")
+  on.exit(unlink(c(src, out), recursive = TRUE), add = TRUE)
+  urls <- make_source_files(src, n = 4)
+  # Return file_names in reverse of the URL order; ordering must still read all files.
+  fake <- function(api_key, data_id, file_name = NULL, preview = FALSE, ...) {
+    list(urls = if (isTRUE(preview)) urls[[1]] else urls,
+         file_names = rev(seq_along(urls)),
+         parent_folder = "visits-duckdb", file_extension = ".snappy.parquet",
+         partition_key = "state", file_size_bytes = 0,
+         cols = c("city", "naics_code", "state", "caid"))
+  }
+  local_mocked_bindings(get_dewey_urls = fake, .package = "deweyr")
+
+  path <- download_dewey_duck(
+    api_key = "k", data_id = "prj_x__fldr_y", output_dir = out, partition = "state",
+    where = "naics_code = '522110'", select = c("city", "naics_code", "state"),
+    batch_size = 2
+  )
+  df <- read_dewey_duck(path)
+  expect_equal(nrow(df), 8)                                # all 4 files read regardless of order
+  expect_equal(length(unique(df$city)), 8)
+})

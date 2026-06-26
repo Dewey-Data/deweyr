@@ -257,6 +257,17 @@ preview_dewey_duck <- function(api_key, data_id, limit = 10) {
 #'   large datasets that can't be pre-filtered with \code{partition_key_*} (e.g.
 #'   Veraset Visits, which has no date partition). Defaults to 25. Lower it if you
 #'   still hit request errors; raise it for throughput on small, reliable datasets.
+#' @param resume If \code{TRUE} (default), re-running the same download into an
+#'   existing folder continues where it left off, skipping batches already on
+#'   disk instead of erroring or starting over. Essential for very large jobs:
+#'   Dewey's download links expire after 24h, so a multi-day download must be
+#'   re-run periodically (each run re-mints links) — \code{resume} makes those
+#'   re-runs pick up where the last left off. Pass \code{overwrite = TRUE} to
+#'   force a clean restart.
+#' @param batch_retries Number of times to retry a batch that fails with a
+#'   transient error (e.g. a dropped connection, which DuckDB reports as
+#'   "HTTP 0") before giving up, using exponential backoff. Defaults to 5. On
+#'   final failure the progress so far is saved, so you can re-run to resume.
 #'
 #' @return The path to the downloaded dataset folder, invisibly. Pipe into
 #'   \code{read_dewey()} to read immediately after downloading.
@@ -303,7 +314,9 @@ download_dewey_duck <- function(api_key, data_id, output_dir = get_download_dir(
                                 where = NULL, select = NULL,
                                 partition_key_after = NULL,
                                 partition_key_before = NULL,
-                                batch_size = 25) {
+                                batch_size = 25,
+                                resume = TRUE,
+                                batch_retries = 5) {
   validate_partition_key(partition_key_after, "partition_key_after")
   validate_partition_key(partition_key_before, "partition_key_before")
 
@@ -376,48 +389,106 @@ download_dewey_duck <- function(api_key, data_id, output_dir = get_download_dir(
   parent_folder <- result$parent_folder
   file_extension <- result$file_extension
 
+  # Order the manifest by stable file identity, not by URL. Dewey mints a fresh
+  # download-link UUID on every call, so URLs differ run-to-run; ordering by file
+  # name keeps batch boundaries identical across runs, which is what makes resume
+  # land on the same batches each time. (Manifests without file_names — e.g. older
+  # ones — fall back to the order returned.)
+  file_names <- result$file_names
+  if (!is.null(file_names) && length(file_names) == length(urls)) {
+    urls <- urls[order(file_names)]
+  }
+
   out <- file.path(output_dir, parent_folder)
   out_read <- gsub("\\\\", "/", out)
 
   # Build optional WHERE clause — user supplied, no validation
   where_clause <- if (!is.null(where)) paste("WHERE", where) else ""
 
-  # Check if folder already exists to prevent duplicate/mixed data
-  if (dir.exists(out) && !overwrite) {
-    stop("'", out, "' already exists. Pass overwrite = TRUE to overwrite.")
-  } else if (dir.exists(out) && overwrite) {
+  read_fn <- ifelse(file_extension == ".snappy.parquet", "read_parquet", "read_csv")
+
+  # Process the manifest in batches instead of handing DuckDB every URL at once.
+  # One read_parquet() over thousands of files opens them near-simultaneously and
+  # overwhelms the download API (HTTP 500), which breaks large datasets that can't
+  # be pre-filtered by partition_key (e.g. Veraset Visits). Batching bounds how many
+  # remote files are open at a time; each batch writes uniquely-named files so
+  # batches never overwrite each other.
+  batches <- split(urls, ceiling(seq_along(urls) / batch_size))
+  n_batches <- length(batches)
+
+  # Resume bookkeeping. A job large enough to outlive its 24h download links must be
+  # re-run to finish; we record completed batches in a small progress file so a
+  # re-run continues instead of redoing (or wiping) everything. The fingerprint
+  # guards against resuming into a folder that holds a *different* download.
+  progress_path <- file.path(out, ".deweyr_progress.json")
+  fingerprint <- list(
+    data_id    = parse_url(data_id),
+    batch_size = batch_size,
+    n_files    = length(urls),
+    n_batches  = n_batches,
+    partition  = if (is.null(partition_col)) NA_character_ else partition_col
+  )
+  completed <- integer(0)
+
+  if (dir.exists(out) && overwrite) {
     unlink(out, recursive = TRUE)
+  } else if (dir.exists(out)) {
+    if (resume && file.exists(progress_path)) {
+      prev <- tryCatch(jsonlite::fromJSON(progress_path), error = function(e) NULL)
+      same <- !is.null(prev) &&
+        identical(as.character(prev$fingerprint$data_id), fingerprint$data_id) &&
+        isTRUE(prev$fingerprint$batch_size == fingerprint$batch_size) &&
+        isTRUE(prev$fingerprint$n_files == fingerprint$n_files) &&
+        isTRUE(prev$fingerprint$n_batches == fingerprint$n_batches)
+      if (!same) {
+        stop("'", out, "' holds a different download (dataset, filters, or batch_size ",
+             "changed). Pass overwrite = TRUE to restart, or use a new output_dir.",
+             call. = FALSE)
+      }
+      completed <- as.integer(unlist(prev$completed))
+      completed <- completed[!is.na(completed) & completed >= 1 & completed <= n_batches]
+      message("Resuming '", out, "': ", length(completed), "/", n_batches,
+              " batches already complete.")
+    } else if (length(list.files(out, recursive = TRUE)) > 0) {
+      stop("'", out, "' already exists. Pass resume = TRUE to continue the same ",
+           "download, or overwrite = TRUE to restart.", call. = FALSE)
+    }
   }
 
   dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
+  write_progress <- function() {
+    jsonlite::write_json(
+      list(fingerprint = fingerprint, completed = as.integer(completed)),
+      progress_path, auto_unbox = TRUE
+    )
+  }
+  write_progress()
+
   con <- DBI::dbConnect(duckdb::duckdb())
   on.exit(DBI::dbDisconnect(con))
   DBI::dbExecute(con, "INSTALL httpfs; LOAD httpfs;")
-
-  # Be gentle on the Dewey download API: reuse connections and retry transient
-  # HTTP errors with backoff (the endpoint can return 500s under a burst of requests).
+  # Be gentle on the Dewey download API and ride out transient HTTP errors.
   DBI::dbExecute(con, "SET http_keep_alive = true;")
   DBI::dbExecute(con, "SET http_retries = 5;")
   DBI::dbExecute(con, "SET http_retry_wait_ms = 1000;")
   DBI::dbExecute(con, "SET http_retry_backoff = 2;")
 
-  read_fn <- ifelse(file_extension == ".snappy.parquet", "read_parquet", "read_csv")
-
-  # Process the manifest in batches instead of handing DuckDB every URL at once.
-  # One read_parquet() over thousands of files opens them near-simultaneously and
-  # overwhelms the download API (HTTP 500), which is what breaks large datasets that
-  # can't be pre-filtered by partition_key (e.g. Veraset Visits). Batching bounds how
-  # many remote files are open at a time; each batch writes with a unique filename so
-  # batches never overwrite each other.
-  batches <- split(urls, ceiling(seq_along(urls) / batch_size))
-  n_batches <- length(batches)
-
-  for (i in seq_along(batches)) {
-    urls_sql <- paste0("['", paste(batches[[i]], collapse = "','"), "']")
-
+  # Remove any partial output left by an interrupted attempt at batch `i`.
+  clear_batch <- function(i) {
     if (!is.null(partition_col)) {
-      DBI::dbExecute(con, glue::glue(
+      stale <- list.files(out, pattern = paste0("^batch", i, "_.*\\.parquet$"),
+                          recursive = TRUE, full.names = TRUE)
+      if (length(stale)) unlink(stale)
+    } else {
+      f <- file.path(out, paste0("data_batch", i, ".parquet"))
+      if (file.exists(f)) unlink(f)
+    }
+  }
+
+  batch_sql <- function(i, urls_sql) {
+    if (!is.null(partition_col)) {
+      glue::glue(
         "COPY (
           SELECT {select_sql} FROM {read_fn}({urls_sql})
           {where_clause}
@@ -429,9 +500,9 @@ download_dewey_duck <- function(api_key, data_id, output_dir = get_download_dir(
          ROW_GROUP_SIZE 256000,
          COMPRESSION ZSTD,
          OVERWRITE_OR_IGNORE true)"
-      ))
+      )
     } else {
-      DBI::dbExecute(con, glue::glue(
+      glue::glue(
         "COPY (
           SELECT {select_sql} FROM {read_fn}({urls_sql})
           {where_clause}
@@ -441,9 +512,28 @@ download_dewey_duck <- function(api_key, data_id, output_dir = get_download_dir(
          ROW_GROUP_SIZE 256000,
          COMPRESSION ZSTD,
          OVERWRITE_OR_IGNORE true)"
-      ))
+      )
     }
+  }
 
+  for (i in seq_along(batches)) {
+    if (i %in% completed) next  # finished on a previous run
+
+    urls_sql <- paste0("['", paste(batches[[i]], collapse = "','"), "']")
+    clear_batch(i)  # drop any partial output before (re)writing
+
+    retry_with_backoff(
+      do = function() DBI::dbExecute(con, batch_sql(i, urls_sql)),
+      max_attempts = batch_retries,
+      label = paste0("Batch ", i, "/", n_batches),
+      hint = paste0(
+        "\nProgress is saved — re-run the same download_dewey_duck() call to ",
+        "resume from here (a re-run fetches fresh download links)."
+      )
+    )
+
+    completed <- c(completed, i)
+    write_progress()
     if (n_batches > 1) message("Batch ", i, "/", n_batches, " complete")
   }
 
