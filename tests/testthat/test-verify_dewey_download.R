@@ -80,3 +80,42 @@ test_that("verify_dewey_download is silent when there are no parquet files", {
   expect_silent(res <- verify_dewey_download(dir))
   expect_length(res, 0)
 })
+
+# ---- partition_key scoping ---------------------------------------------------
+
+test_that("partition_key range scopes verification by the file-name date", {
+  dir <- tempfile("dwvpk"); dir.create(dir)
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  make_valid_parquet(file.path(dir, "2025-01-15--data_a.parquet"))  # in range, valid
+  writeLines("err", file.path(dir, "2025-01-20--data_b.parquet"))   # in range, corrupt
+  writeLines("err", file.path(dir, "2025-02-05--data_c.parquet"))   # out of range, corrupt
+
+  bad <- suppressWarnings(verify_dewey_download(
+    dir, partition_key_after = "2025-01", partition_key_before = "2025-01"))
+  expect_equal(basename(bad), "2025-01-20--data_b.parquet")         # Feb file not checked
+})
+
+test_that("partition_key_before excludes later partitions (granularity-aware)", {
+  dir <- tempfile("dwvpk2"); dir.create(dir)
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  writeLines("err", file.path(dir, "2025-01-15--a.parquet"))
+  writeLines("err", file.path(dir, "2025-03-15--b.parquet"))
+  bad <- suppressWarnings(verify_dewey_download(dir, partition_key_before = "2025-02"))
+  expect_equal(basename(bad), "2025-01-15--a.parquet")              # March excluded
+})
+
+test_that("a partition range matching no files is reported cleanly", {
+  dir <- tempfile("dwvpk3"); dir.create(dir)
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  make_valid_parquet(file.path(dir, "2025-01-15--a.parquet"))
+  expect_message(res <- verify_dewey_download(dir, partition_key_after = "2030-01"),
+                 "No downloaded parquet files fall")
+  expect_length(res, 0)
+})
+
+test_that("verify_dewey_download validates partition keys", {
+  expect_error(
+    verify_dewey_download(tempdir(), partition_key_after = "2025-01\nx"),
+    "newline"
+  )
+})

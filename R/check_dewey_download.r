@@ -14,6 +14,11 @@
 #' @param download_path The folder you downloaded into. Searched recursively, so
 #'   it works regardless of the subfolder layout. Defaults to the same location
 #'   \code{download_dewey()} uses.
+#' @param partition_key_after,partition_key_before Optional character strings
+#'   (typically YYYY-MM-DD or YYYY-MM), the same values you pass to
+#'   \code{download_dewey()}. When given, only that slice of the dataset's
+#'   manifest is fetched and checked — so you can verify just the partitions you
+#'   downloaded instead of comparing against the whole dataset (also faster).
 #'
 #' @return A tibble (invisibly) with one row per problem file and columns
 #'   \code{file}, \code{expected_bytes}, \code{local_bytes} (\code{NA} if
@@ -33,8 +38,16 @@
 #' }
 #'
 #' @export
-check_dewey_download <- function(api_key, folder_id, download_path = get_download_dir()) {
-  result <- get_dewey_urls(api_key, folder_id)
+check_dewey_download <- function(api_key, folder_id, download_path = get_download_dir(),
+                                 partition_key_after = NULL, partition_key_before = NULL) {
+  validate_partition_key(partition_key_after, "partition_key_after")
+  validate_partition_key(partition_key_before, "partition_key_before")
+
+  result <- get_dewey_urls(
+    api_key, folder_id,
+    partition_key_after = partition_key_after,
+    partition_key_before = partition_key_before
+  )
   file_names <- result$file_names
   file_sizes <- suppressWarnings(as.numeric(result$file_sizes))
 

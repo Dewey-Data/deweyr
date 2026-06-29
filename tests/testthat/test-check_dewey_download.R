@@ -93,3 +93,34 @@ test_that("errors clearly if the manifest has no per-file sizes", {
     "per-file sizes"
   )
 })
+
+test_that("partition keys are forwarded to the manifest fetch", {
+  dir <- tempfile("dwchkpk"); dir.create(dir)
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  writeBin(raw(10), file.path(dir, "2025-01-01--a.parquet"))
+
+  captured <- new.env()
+  fake <- function(api_key, data_id, file_name = NULL, preview = FALSE,
+                   partition_key_after = NULL, partition_key_before = NULL) {
+    captured$after  <- partition_key_after
+    captured$before <- partition_key_before
+    list(file_names = "2025-01-01--a.parquet", file_sizes = 10, urls = "u1",
+         parent_folder = "x", file_extension = ".snappy.parquet",
+         partition_key = NA, file_size_bytes = 10, cols = character(0))
+  }
+  local_mocked_bindings(get_dewey_urls = fake, .package = "deweyr")
+
+  suppressMessages(check_dewey_download(
+    "k", "prj_x__fldr_y", download_path = dir,
+    partition_key_after = "2025-01", partition_key_before = "2025-01"
+  ))
+  expect_equal(captured$after, "2025-01")
+  expect_equal(captured$before, "2025-01")
+})
+
+test_that("check_dewey_download validates partition keys before any API call", {
+  expect_error(
+    check_dewey_download("k", "prj_x__fldr_y", partition_key_after = ""),
+    "partition_key_after"
+  )
+})

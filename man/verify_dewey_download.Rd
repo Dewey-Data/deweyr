@@ -4,7 +4,12 @@
 \alias{verify_dewey_download}
 \title{Verify downloaded Dewey parquet files}
 \usage{
-verify_dewey_download(download_path, delete_corrupt = FALSE)
+verify_dewey_download(
+  download_path,
+  delete_corrupt = FALSE,
+  partition_key_after = NULL,
+  partition_key_before = NULL
+)
 }
 \arguments{
 \item{download_path}{Path to the folder the data was downloaded into. Scanned
@@ -13,6 +18,13 @@ recursively for \code{*.parquet} files (includes \code{*.snappy.parquet}).}
 \item{delete_corrupt}{If \code{TRUE}, delete the corrupt files so a re-run of
 the download re-fetches only those (deweypy's \code{skip_existing} keeps the
 good ones). Defaults to \code{FALSE} (report only).}
+
+\item{partition_key_after, partition_key_before}{Optional character strings
+(typically YYYY-MM-DD or YYYY-MM), the same values you pass to
+\code{download_dewey()}. When given, only files whose leading date falls in
+that range are verified, so you can check just the partitions you downloaded.
+Matching is on the date prefix in the file name (how Dewey names partitioned
+files); files without a leading date are skipped when a bound is set.}
 }
 \value{
 A character vector of corrupt file paths, invisibly (empty if all OK).

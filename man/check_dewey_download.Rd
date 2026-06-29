@@ -4,7 +4,13 @@
 \alias{check_dewey_download}
 \title{Check whether a Dewey download is complete}
 \usage{
-check_dewey_download(api_key, folder_id, download_path = get_download_dir())
+check_dewey_download(
+  api_key,
+  folder_id,
+  download_path = get_download_dir(),
+  partition_key_after = NULL,
+  partition_key_before = NULL
+)
 }
 \arguments{
 \item{api_key}{Your Dewey API key. Store in \code{.Renviron} as
@@ -16,6 +22,12 @@ check_dewey_download(api_key, folder_id, download_path = get_download_dir())
 \item{download_path}{The folder you downloaded into. Searched recursively, so
 it works regardless of the subfolder layout. Defaults to the same location
 \code{download_dewey()} uses.}
+
+\item{partition_key_after, partition_key_before}{Optional character strings
+(typically YYYY-MM-DD or YYYY-MM), the same values you pass to
+\code{download_dewey()}. When given, only that slice of the dataset's manifest
+is fetched and checked — so you can verify just the partitions you downloaded
+instead of comparing against the whole dataset (also faster).}
 }
 \value{
 A tibble (invisibly) with one row per problem file and columns

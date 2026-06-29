@@ -18,6 +18,34 @@ parquet_footer_ok <- function(path) {
   identical(readBin(con, "raw", n = 4L), charToRaw("PAR1"))
 }
 
+#' Which file names fall within a partition-key date range
+#'
+#' Dewey names date-partitioned files with a leading date (e.g.
+#' "2025-01-15--data_....parquet"), and \code{partition_key_*} bounds are dates
+#' too. Comparing the file's leading date, truncated to the bound's length,
+#' handles mixed granularity (e.g. a YYYY-MM bound against a YYYY-MM-DD file):
+#' "2025-01-15" -> "2025-01" matches a bound of "2025-01". Files without a
+#' leading date are excluded when a bound is supplied.
+#'
+#' @param file_names Character vector of file names (base names).
+#' @param after,before Optional YYYY-MM or YYYY-MM-DD lower/upper bounds (inclusive).
+#' @return Logical vector, \code{TRUE} for names within range.
+#' @keywords internal
+#' @noRd
+in_partition_range <- function(file_names, after = NULL, before = NULL) {
+  base <- basename(file_names)
+  date <- sub("^([0-9]{4}-[0-9]{2}(-[0-9]{2})?).*$", "\\1", base)
+  has_date <- grepl("^[0-9]{4}-[0-9]{2}", base)
+  keep <- rep(TRUE, length(file_names))
+  if (!is.null(after)) {
+    keep <- keep & has_date & substr(date, 1L, nchar(after)) >= after
+  }
+  if (!is.null(before)) {
+    keep <- keep & has_date & substr(date, 1L, nchar(before)) <= before
+  }
+  keep
+}
+
 #' Verify downloaded Dewey parquet files
 #'
 #' Scans a download folder for parquet files that are corrupt — empty, or
@@ -36,6 +64,12 @@ parquet_footer_ok <- function(path) {
 #' @param delete_corrupt If \code{TRUE}, delete the corrupt files so a re-run of
 #'   the download re-fetches only those (deweypy's \code{skip_existing} keeps the
 #'   good ones). Defaults to \code{FALSE} (report only).
+#' @param partition_key_after,partition_key_before Optional character strings
+#'   (typically YYYY-MM-DD or YYYY-MM), the same values you pass to
+#'   \code{download_dewey()}. When given, only files whose leading date falls in
+#'   that range are verified, so you can check just the partitions you downloaded.
+#'   Matching is on the date prefix in the file name (how Dewey names partitioned
+#'   files); files without a leading date are skipped when a bound is set.
 #'
 #' @return A character vector of corrupt file paths, invisibly (empty if all OK).
 #'
@@ -50,12 +84,26 @@ parquet_footer_ok <- function(path) {
 #' }
 #'
 #' @export
-verify_dewey_download <- function(download_path, delete_corrupt = FALSE) {
+verify_dewey_download <- function(download_path, delete_corrupt = FALSE,
+                                  partition_key_after = NULL,
+                                  partition_key_before = NULL) {
+  validate_partition_key(partition_key_after, "partition_key_after")
+  validate_partition_key(partition_key_before, "partition_key_before")
+
   files <- list.files(
     download_path, pattern = "\\.parquet$", full.names = TRUE, recursive = TRUE
   )
   if (length(files) == 0) {
     return(invisible(character(0)))
+  }
+
+  # Scope to a partition-key range by the date prefix in the file name.
+  if (!is.null(partition_key_after) || !is.null(partition_key_before)) {
+    files <- files[in_partition_range(files, partition_key_after, partition_key_before)]
+    if (length(files) == 0) {
+      message("No downloaded parquet files fall in the given partition_key range.")
+      return(invisible(character(0)))
+    }
   }
 
   ok <- vapply(files, parquet_footer_ok, logical(1))
