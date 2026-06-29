@@ -85,6 +85,7 @@ try:
     if preview:
         urls = first["link"]
         file_names = []
+        file_sizes = []
     else:
         urls = [f["link"] for f in files]
         # Stable per-file identity. Unlike `link` (a fresh download-link UUID on
@@ -92,6 +93,9 @@ try:
         # deterministically across runs — which is what makes resumed downloads
         # land on the same batches each time.
         file_names = [f["file_name"] for f in files]
+        # Per-file sizes let callers verify a download is complete (every file
+        # present at its expected size) without scraping console output.
+        file_sizes = [f.get("file_size_bytes") for f in files]
     file_extension = first["file_extension"]
     raw_file_name = first["file_name"]
 except KeyError as e:
@@ -134,6 +138,7 @@ print(
         {
             "urls": urls,
             "file_names": file_names,
+            "file_sizes": file_sizes,
             "parent_folder": parent_folder,
             "file_extension": file_extension,
             "partition_key": first.get("partition_key"),
